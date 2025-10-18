@@ -3,18 +3,22 @@
 #include <DHT.h>
 
 // WiFi credentials
-const char* ssid = "Poco M2 Pro";            // 🔁 Replace with your WiFi SSID
-const char* password = "jalaj@2426";    // 🔁 Replace with your WiFi Password
+const char* ssid = "Poco M2 Pro";
+const char* password = "jalaj@2426";
 
 // ThingSpeak credentials
-unsigned long channelID = 2925486;         // 🔁 Replace with your ThingSpeak Channel ID
-const char* apiKey = "3X99YH0PM79NEYY8"; // 🔁 Replace with your Write API Key
+unsigned long channelID = 2925486;
+const char* apiKey = "3X99YH0PM79NEYY8";
 
-// Sensor pins (based on ESP8266 NodeMCU)
-#define DHTPIN D4                // DHT22 data pin connected to D4 (GPIO2)
-#define DHTTYPE DHT11           // Use DHT22 sensor
-#define soilMoisturePin A0      // Soil Moisture sensor on analog pin A0
-#define lightSensorPin D3       // LDR connected to D3 (GPIO0) - digital pin
+// Sensor pins
+#define DHTPIN D4
+#define DHTTYPE DHT11
+#define soilMoisturePin A0
+#define lightSensorPin D3
+#define relayPin D2             // Relay module control pin
+
+// Irrigation settings
+int soilMoistureThreshold = 500; // Adjust this based on calibration
 
 DHT dht(DHTPIN, DHTTYPE);
 WiFiClient client;
@@ -23,7 +27,9 @@ void setup() {
   Serial.begin(115200);
   dht.begin();
 
-  pinMode(lightSensorPin, INPUT);  // LDR as digital input
+  pinMode(lightSensorPin, INPUT);
+  pinMode(relayPin, OUTPUT);
+  digitalWrite(relayPin, HIGH);  // Relay off initially (active LOW)
 
   // Connect to Wi-Fi
   Serial.print("Connecting to WiFi");
@@ -32,43 +38,59 @@ void setup() {
     delay(1000);
     Serial.print(".");
   }
-  Serial.println("\nWiFi connected");
+  Serial.println("\n✅ WiFi connected");
 
   // Initialize ThingSpeak
   ThingSpeak.begin(client);
 }
 
 void loop() {
-  // Read temperature and humidity from DHT22
+  // Reconnect WiFi if disconnected
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.println("Reconnecting WiFi...");
+    WiFi.begin(ssid, password);
+    while (WiFi.status() != WL_CONNECTED) {
+      delay(1000);
+      Serial.print(".");
+    }
+    Serial.println("\nWiFi reconnected");
+  }
+
+  // Read sensors
   float temperature = dht.readTemperature();
   float humidity = dht.readHumidity();
+  int soilMoisture = analogRead(soilMoisturePin);
+  int lightLevel = digitalRead(lightSensorPin);
 
-  // Read soil moisture
-  int soilMoisture = analogRead(soilMoisturePin); // Value between 0–1023
-
-  // Read light condition (digital)
-  int lightLevel = digitalRead(lightSensorPin); // 0 = dark, 1 = bright
-
-  // Debugging in Serial Monitor
+  // Debug output
+  Serial.println("=== Sensor Readings ===");
   Serial.print("Temperature: "); Serial.print(temperature); Serial.println(" °C");
   Serial.print("Humidity: "); Serial.print(humidity); Serial.println(" %");
   Serial.print("Soil Moisture: "); Serial.println(soilMoisture);
-  Serial.print("Light Condition: "); Serial.println(lightLevel == 1 ? "Bright" : "Dark");
+  Serial.print("Light: "); Serial.println(lightLevel == 1 ? "Bright" : "Dark");
 
-  // Send to ThingSpeak
-  ThingSpeak.setField(1, temperature);     // Field 1 - Temperature
-  ThingSpeak.setField(2, humidity);        // Field 2 - Humidity
-  ThingSpeak.setField(3, soilMoisture);    // Field 3 - Soil Moisture
-  ThingSpeak.setField(4, lightLevel);      // Field 4 - Light (0/1)
+  // 🌿 Automated irrigation control
+  if (soilMoisture > soilMoistureThreshold) {
+    digitalWrite(relayPin, LOW); // Turn pump ON
+    Serial.println("💧 Soil dry - Pump ON");
+  } else {
+    digitalWrite(relayPin, HIGH); // Turn pump OFF
+    Serial.println("🪴 Soil wet - Pump OFF");
+  }
 
-  // Write to ThingSpeak
+  // Send only sensor data to ThingSpeak
+  ThingSpeak.setField(1, temperature);   // Field 1 - Temperature
+  ThingSpeak.setField(2, humidity);      // Field 2 - Humidity
+  ThingSpeak.setField(3, soilMoisture);  // Field 3 - Soil Moisture
+  ThingSpeak.setField(4, lightLevel);    // Field 4 - Light (0/1)
+
   int response = ThingSpeak.writeFields(channelID, apiKey);
   if (response == 200) {
-    Serial.println("✅ Data sent to ThingSpeak successfully!");
+    Serial.println("✅ Data sent to ThingSpeak!");
   } else {
     Serial.print("❌ Error sending data: ");
     Serial.println(response);
   }
 
-  delay(15000); // Wait 15 seconds before sending next set of data
+  delay(20000); // Wait 20 seconds before next update
 }
