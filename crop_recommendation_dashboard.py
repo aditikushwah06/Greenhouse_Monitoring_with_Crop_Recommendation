@@ -1,14 +1,14 @@
 import streamlit as st
 import requests
 import pandas as pd
-from sklearn.ensemble import RandomForestClassifier
+from sklearn.tree import DecisionTreeClassifier
 from sklearn.preprocessing import MinMaxScaler
 
-# Streamlit Page 
+# Streamlit UI Setup
 st.set_page_config(page_title="Greenhouse Crop Recommender", layout="wide")
 st.title("🌱 Greenhouse Crop Recommendation Dashboard")
 
-# External Weather Forecast
+# Weather API Section
 st.subheader("🌤️ External Weather Forecast (via OpenWeatherMap)")
 
 WEATHER_API_KEY = "bd1eea61abef93db6cce5bc84364e272"
@@ -20,7 +20,7 @@ try:
     weather_temp = weather_data['main']['temp']
     weather_humidity = weather_data['main']['humidity']
     weather_condition = weather_data['weather'][0]['description'].title()
-    
+
     colA, colB, colC = st.columns(3)
     colA.metric("🌡️ Outside Temp", f"{weather_temp} °C")
     colB.metric("💧 Outside Humidity", f"{weather_humidity} %")
@@ -29,10 +29,9 @@ try:
 except Exception:
     st.warning("⚠️ Unable to fetch weather data. Check your API key or internet connection.")
 
-# ThingSpeak Sensor Data
+# Fetch Sensor Data from ThingSpeak
 st.subheader("🌿 Current Sensor Readings with Crop Recommendations")
 
-# Fetch latest 10 entries
 url = 'https://api.thingspeak.com/channels/2925486/feeds.json?api_key=Y0GUWEIJUUF8RT1R&results=10'
 
 try:
@@ -48,35 +47,31 @@ if df.empty:
     st.warning("⚠️ No sensor data available.")
     st.stop()
 
-# Select and rename columns
+# Select + Rename Columns
 df = df[['created_at', 'entry_id', 'field1', 'field2', 'field3', 'field4']]
 df.columns = ['created_at', 'entry_id', 'temperature', 'humidity', 'soil_moisture_raw', 'light']
 
-# Data Cleaning & Preprocessing
-# Convert to numeric safely
+# Data Cleaning / Preprocessing
 for col in ['temperature', 'humidity', 'soil_moisture_raw', 'light']:
     df[col] = pd.to_numeric(df[col], errors='coerce')
 
-# Compute derived feature
 df['soil_moisture'] = 1024 - df['soil_moisture_raw']
-
-# Drop rows with missing values
 df.dropna(subset=['temperature', 'humidity', 'soil_moisture', 'light'], inplace=True)
 
-# Clip to realistic greenhouse ranges
 df['temperature'] = df['temperature'].clip(5, 40)
 df['humidity'] = df['humidity'].clip(10, 90)
 df['soil_moisture'] = df['soil_moisture'].clip(50, 950)
 
-# Fill missing light values with mode
 df['light'] = df['light'].fillna(df['light'].mode()[0])
 
-# Smooth noisy sensor values
+# Smooth sensor values
 df['temperature'] = df['temperature'].rolling(window=3, min_periods=1).mean()
 df['humidity'] = df['humidity'].rolling(window=3, min_periods=1).mean()
 df['soil_moisture'] = df['soil_moisture'].rolling(window=3, min_periods=1).mean()
 
-# Training Data (20+ crops + improved 'No Crop')
+# Training Dataset
+columns = ["temperature", "humidity", "soil_moisture", "light", "crop"]
+
 train_data = [
     # Tomato
     [25, 50, 600, 1, "Tomato"], [26, 55, 620, 1, "Tomato"], [24, 48, 580, 1, "Tomato"],
@@ -122,32 +117,34 @@ train_data = [
     [15, 60, 780, 0, "Lettuce Baby Leaf"], [16, 62, 800, 0, "Lettuce Baby Leaf"], [14, 58, 760, 0, "Lettuce Baby Leaf"],
 ]
 
-columns = ["temperature", "humidity", "soil_moisture", "light", "crop"]
 df_train = pd.DataFrame(train_data, columns=columns)
 
-# Add more realistic 'No Crop' samples
+# Add 'No Crop' conditions
 no_crop_samples = [
-    [10, 20, 150, 0, "No Crop"],   # too dry
-    [35, 90, 850, 1, "No Crop"],   # too humid
-    [5, 40, 200, 0, "No Crop"],    # too cold/dry
-    [38, 30, 100, 1, "No Crop"],   # too hot/dry
-    [40, 50, 900, 1, "No Crop"],   # too wet
+    [10, 20, 150, 0, "No Crop"],
+    [35, 90, 850, 1, "No Crop"],
+    [5, 40, 200, 0, "No Crop"],
+    [38, 30, 100, 1, "No Crop"],
+    [40, 50, 900, 1, "No Crop"],
 ]
+
 df_train = pd.concat([df_train, pd.DataFrame(no_crop_samples, columns=columns)], ignore_index=True)
 
-# Model Training
+
+# ML Model (Decision Tree Classifier)
 X_train = df_train[["temperature", "humidity", "soil_moisture", "light"]]
 y_train = df_train["crop"]
 
 scaler = MinMaxScaler()
 X_train_scaled = scaler.fit_transform(X_train)
 
-rf_model = RandomForestClassifier(n_estimators=100, random_state=42)
-rf_model.fit(X_train_scaled, y_train)
+dt_model = DecisionTreeClassifier(random_state=42)
+dt_model.fit(X_train_scaled, y_train)
 
-# Validation & Prediction Functions
+# ------------------------------------------
+# Validation and Prediction
+# ------------------------------------------
 def validate_sensor(row):
-    """Ensure sensor data falls in realistic growing ranges."""
     if not (10 <= row['temperature'] <= 35):
         return False
     if not (30 <= row['humidity'] <= 85):
@@ -159,32 +156,30 @@ def validate_sensor(row):
 def predict_top_crops(row, top_n=3):
     features = [[row['temperature'], row['humidity'], row['soil_moisture'], row['light']]]
     features_scaled = scaler.transform(features)
-    probs = rf_model.predict_proba(features_scaled)[0]
-    classes = rf_model.classes_
+    probs = dt_model.predict_proba(features_scaled)[0]
+    classes = dt_model.classes_
     top_indices = probs.argsort()[-top_n:][::-1]
     return [classes[i] for i in top_indices]
 
-# Apply Predictions
-
+# Display Dashboard Entries
 df['Recommended Crops'] = df.apply(
     lambda row: predict_top_crops(row) if validate_sensor(row) else ["No crops — sensor values invalid"],
     axis=1
 )
 
-# Display Dashboard
-
 for index, row in df.sort_values(by='created_at', ascending=False).iterrows():
     with st.expander(f"📅 {row['created_at']} - {', '.join(row['Recommended Crops'])}"):
+
         col1, col2, col3, col4 = st.columns(4)
-        with col1: st.metric("🌡️ Temp", f"{row['temperature']:.1f} °C")
-        with col2: st.metric("💧 Humidity", f"{row['humidity']:.1f} %")
-        with col3: st.metric("🌱 Soil Moisture", f"{row['soil_moisture']:.0f}/1024")
-        with col4: st.metric("💡 Light", "High" if row['light'] == 1 else "Low")
+        col1.metric("🌡️ Temp", f"{row['temperature']:.1f} °C")
+        col2.metric("💧 Humidity", f"{row['humidity']:.1f} %")
+        col3.metric("🌱 Soil Moisture", f"{row['soil_moisture']:.0f}/1024")
+        col4.metric("💡 Light", "High" if row['light'] == 1 else "Low")
 
         st.subheader("Top 3 Recommended Crops:")
         for crop in row['Recommended Crops']:
             st.success(f"✅ {crop}")
 
-
 # Footer
+
 st.caption("ℹ️ Data updates on page refresh. External weather helps correlate with internal greenhouse conditions.")
