@@ -141,9 +141,8 @@ X_train_scaled = scaler.fit_transform(X_train)
 dt_model = DecisionTreeClassifier(random_state=42)
 dt_model.fit(X_train_scaled, y_train)
 
-# ------------------------------------------
 # Validation and Prediction
-# ------------------------------------------
+
 def validate_sensor(row):
     if not (10 <= row['temperature'] <= 35):
         return False
